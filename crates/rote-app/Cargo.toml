@@ -1,0 +1,21 @@
+[package]
+name = "rote-app"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "rote"
+path = "src/main.rs"
+
+[dependencies]
+rote-core = { workspace = true }
+rote-render = { workspace = true }
+rote-ui = { workspace = true }
+rote-lsp = { workspace = true }
+rote-pyapi = { workspace = true }
+winit = "0.30"
+pollster = "1"
+anyhow = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }

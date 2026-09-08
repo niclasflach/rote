@@ -1,0 +1,16 @@
+[package]
+name = "rote-pyapi"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[lib]
+name = "rote_pyapi"
+crate-type = ["rlib"]
+
+[dependencies]
+rote-core = { workspace = true }
+anyhow = { workspace = true }
+thiserror = { workspace = true }
+tracing = { workspace = true }
+pyo3 = { version = "0.29.2", features = ["auto-initialize"] }

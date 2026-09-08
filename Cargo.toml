@@ -1,0 +1,42 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/rote-core",
+    "crates/rote-render",
+    "crates/rote-ui",
+    "crates/rote-lsp",
+    "crates/rote-pyapi",
+    "crates/rote-app",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+authors = ["Rote contributors"]
+repository = "https://github.com/rote-editor/rote"
+
+[workspace.dependencies]
+rote-core = { path = "crates/rote-core" }
+rote-render = { path = "crates/rote-render" }
+rote-ui = { path = "crates/rote-ui" }
+rote-lsp = { path = "crates/rote-lsp" }
+rote-pyapi = { path = "crates/rote-pyapi" }
+
+# Shared across crates
+anyhow = "1"
+thiserror = "2"
+tracing = "0.1"
+tracing-subscriber = "0.3"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "process", "io-util", "sync"] }
+
+[profile.release]
+opt-level = 3
+lto = "thin"
+codegen-units = 1
+panic = "abort"
+
+[profile.dev.package."*"]
+opt-level = 2

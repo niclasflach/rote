@@ -1,0 +1,14 @@
+[package]
+name = "rote-render"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+anyhow = { workspace = true }
+bytemuck = { version = "1.25.2", features = ["derive"] }
+glyphon = "0.12.0"
+pollster = "1.0.1"
+tracing = { workspace = true }
+wgpu = "30.0.1"
+winit = "0.30.13"

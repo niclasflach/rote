@@ -1,0 +1,9 @@
+[package]
+name = "rote-ui"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+rote-render = { workspace = true }
+anyhow = { workspace = true }
