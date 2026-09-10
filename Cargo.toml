@@ -6,6 +6,7 @@ members = [
     "crates/rote-ui",
     "crates/rote-lsp",
     "crates/rote-pyapi",
+    "crates/rote-syntax",
     "crates/rote-app",
 ]
 
@@ -22,6 +23,7 @@ rote-render = { path = "crates/rote-render" }
 rote-ui = { path = "crates/rote-ui" }
 rote-lsp = { path = "crates/rote-lsp" }
 rote-pyapi = { path = "crates/rote-pyapi" }
+rote-syntax = { path = "crates/rote-syntax" }
 
 # Shared across crates
 anyhow = "1"

@@ -259,15 +259,18 @@ impl PluginHost {
     /// the body text. `line` is the 1-based logical line number; `wrapped`
     /// is true for a soft-wrap continuation row (not the line's first —
     /// always `false` today, since `rote-app` doesn't wrap the body text
-    /// yet); `current` is true if `line` is the buffer's active cursor
-    /// line. Returns `None` if no plugin registered a provider, or if the
-    /// callback raises (logged, not fatal — one bad gutter plugin
-    /// shouldn't blank the whole gutter).
-    pub fn gutter_text(&self, line: usize, wrapped: bool, current: bool) -> Option<String> {
+    /// yet); `current_line` is the buffer's active cursor line (also
+    /// 1-based) — the same value on every call within one relayout, so a
+    /// plugin can compare it against `line` (for "is this the current
+    /// row") or subtract from it (for relative numbering) without needing
+    /// to track cursor position itself. Returns `None` if no plugin
+    /// registered a provider, or if the callback raises (logged, not
+    /// fatal — one bad gutter plugin shouldn't blank the whole gutter).
+    pub fn gutter_text(&self, line: usize, wrapped: bool, current_line: usize) -> Option<String> {
         let gutter = self.gutter.clone();
         Python::attach(|py| {
             let callback = gutter.lock().expect("gutter provider poisoned").as_ref()?.clone_ref(py);
-            match callback.call1(py, (line, wrapped, current)) {
+            match callback.call1(py, (line, wrapped, current_line)) {
                 Ok(result) => match result.extract::<String>(py) {
                     Ok(text) => Some(text),
                     Err(err) => {

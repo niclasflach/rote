@@ -14,6 +14,7 @@ rote-render = { workspace = true }
 rote-ui = { workspace = true }
 rote-lsp = { workspace = true }
 rote-pyapi = { workspace = true }
+rote-syntax = { workspace = true }
 winit = "0.30"
 pollster = "1"
 anyhow = { workspace = true }

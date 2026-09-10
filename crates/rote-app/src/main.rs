@@ -3,9 +3,10 @@ use std::sync::{Arc, Mutex};
 use rote_core::{Editor, Rope};
 use rote_pyapi::{build_chord, PluginHost};
 use rote_render::{
-    Attrs, ClearColor, Color, Family, LayoutCursor, Metrics, RectDraw, Renderer, Shaping, TextBuffer, TextDraw,
-    Wrap,
+    Attrs, ClearColor, Color, Family, LayoutCursor, Metrics, RectDraw, Renderer, Scroll, Shaping, TextBuffer,
+    TextDraw, Wrap,
 };
+use rote_syntax::{HighlightKind, HighlightSpan, Highlighter};
 use winit::application::ApplicationHandler;
 use winit::dpi::LogicalSize;
 use winit::event::{ElementState, KeyEvent, MouseButton, WindowEvent};
@@ -33,6 +34,45 @@ const BODY_FONT_SIZE: f32 = 16.0;
 const BODY_LINE_HEIGHT: f32 = 22.0;
 const GUTTER_FG: Color = Color::rgb(110, 118, 138);
 const GUTTER_GAP: f32 = 16.0;
+
+/// Maps a semantic highlight category to an actual color — `rote-syntax`
+/// has no rendering knowledge at all, so this theme lives here instead.
+fn highlight_color(kind: HighlightKind) -> Color {
+    match kind {
+        HighlightKind::Keyword => Color::rgb(187, 154, 247),
+        HighlightKind::String => Color::rgb(158, 206, 106),
+        HighlightKind::Comment => Color::rgb(122, 130, 154),
+        HighlightKind::Number => Color::rgb(255, 158, 100),
+        HighlightKind::Function => Color::rgb(122, 162, 247),
+        HighlightKind::Type | HighlightKind::Module => Color::rgb(125, 207, 255),
+        HighlightKind::Constant => Color::rgb(255, 199, 119),
+        HighlightKind::Property => Color::rgb(115, 218, 202),
+        HighlightKind::Operator => Color::rgb(199, 199, 209),
+        HighlightKind::Punctuation => Color::rgb(169, 177, 214),
+        HighlightKind::Variable => FG,
+    }
+}
+
+/// Turns a flat source string plus (sorted, non-overlapping) highlight
+/// spans into the `(&str, Attrs)` sequence `TextBuffer::set_rich_text`
+/// wants — the gaps between spans (and before the first / after the last)
+/// get `base_attrs` unchanged, so callers don't need to special-case
+/// unhighlighted text.
+fn rich_spans<'t, 'r>(text: &'t str, spans: &[HighlightSpan], base_attrs: &Attrs<'r>) -> Vec<(&'t str, Attrs<'r>)> {
+    let mut pieces = Vec::with_capacity(spans.len() * 2 + 1);
+    let mut pos = 0;
+    for span in spans {
+        if span.range.start > pos {
+            pieces.push((&text[pos..span.range.start], base_attrs.clone()));
+        }
+        pieces.push((&text[span.range.clone()], base_attrs.clone().color(highlight_color(span.kind))));
+        pos = span.range.end;
+    }
+    if pos < text.len() {
+        pieces.push((&text[pos..], base_attrs.clone()));
+    }
+    pieces
+}
 
 /// Converts a rope char offset to the `(line, byte_index)` cursor that
 /// cosmic-text's layout API (hit-testing, highlight spans) expects.
@@ -168,10 +208,24 @@ struct WindowState {
     gutter: TextBuffer,
     picker: Option<Picker>,
     picker_buffer: TextBuffer,
+    /// Built once and reused — constructing a `Highlighter` compiles a
+    /// tree-sitter query, not free enough to redo every relayout. Only one
+    /// language exists today, so it's unconditional; once there's more
+    /// than one this should become per-extension and built lazily instead.
+    python_highlighter: Highlighter,
     /// Screen-space x where the body text starts — `BASE_LEFT` normally,
     /// pushed right by a gutter plugin's rendered width (if any).
     /// Recomputed every [`WindowState::relayout`].
     body_left: f32,
+    /// Logical line number of the first visible row. `cosmic_text::Buffer`
+    /// has its own `Scroll`, but `set_text` unconditionally resets it to
+    /// line 0 (see `set_text_impl` in cosmic-text) — since `relayout` calls
+    /// `set_text` on every keystroke, not just when the text changes, that
+    /// built-in scroll can't survive a frame on its own. This is the real,
+    /// persistent scroll position; [`WindowState::relayout`] reapplies it
+    /// via `set_scroll` after every `set_text`, adjusting it first so the
+    /// cursor's line always stays on screen.
+    top_line: usize,
     modifiers: ModifiersState,
     mouse_pos: (f32, f32),
     dragging: bool,
@@ -226,7 +280,9 @@ impl WindowState {
             gutter,
             picker: None,
             picker_buffer,
+            python_highlighter: Highlighter::python(),
             body_left: BASE_LEFT,
+            top_line: 0,
             modifiers: ModifiersState::empty(),
             mouse_pos: (0.0, 0.0),
             dragging: false,
@@ -237,22 +293,36 @@ impl WindowState {
 
     fn relayout(&mut self) {
         let (width, height) = self.renderer.size();
+        let visible_rows = ((height as f32 - 40.0) / BODY_LINE_HEIGHT).floor().max(1.0) as usize;
 
-        let (text, total_lines, current_line) = {
+        let (text, total_lines, current_line, is_python) = {
             let editor = self.editor.lock().unwrap();
             match editor.active_id().and_then(|id| Some((editor.buffer(id)?, editor.cursor(id)?))) {
                 Some((buf, cursor)) => {
                     let line = buf.rope().char_to_line(cursor.head.min(buf.len_chars()));
-                    (buf.text(), buf.len_lines(), line)
+                    let is_python = buf.path.as_deref().and_then(|p| p.extension()).is_some_and(|e| e == "py");
+                    (buf.text(), buf.len_lines(), line, is_python)
                 }
-                None => (String::new(), 1, 0),
+                None => (String::new(), 1, 0, false),
             }
         };
         let status_text = self.status_line_text();
 
+        // Scroll just enough to keep the cursor's line on screen — never
+        // more, and never independent of it (there's no mouse wheel or
+        // PageUp/Down yet, so the cursor is the only thing that should move
+        // the view).
+        if current_line < self.top_line {
+            self.top_line = current_line;
+        } else if current_line >= self.top_line + visible_rows {
+            self.top_line = current_line + 1 - visible_rows;
+        }
+        self.top_line = self.top_line.min(total_lines.saturating_sub(1));
+
         let gutter_text = if self.plugin_host.has_gutter() {
-            (0..total_lines)
-                .map(|i| self.plugin_host.gutter_text(i + 1, false, i == current_line).unwrap_or_default())
+            let current_line = current_line + 1;
+            (self.top_line..(self.top_line + visible_rows).min(total_lines))
+                .map(|i| self.plugin_host.gutter_text(i + 1, false, current_line).unwrap_or_default())
                 .collect::<Vec<_>>()
                 .join("\n")
         } else {
@@ -261,6 +331,9 @@ impl WindowState {
 
         let font_system = self.renderer.font_system();
 
+        // The gutter buffer holds only the visible slice above, so it never
+        // needs its own scroll — it starts at its own line 0, which is
+        // `self.top_line` in the real buffer.
         self.gutter
             .set_text(&gutter_text, &Attrs::new().family(Family::Monospace), Shaping::Advanced, None);
         self.gutter.shape_until_scroll(font_system, false);
@@ -269,8 +342,17 @@ impl WindowState {
 
         self.body
             .set_size(Some(width as f32 - self.body_left - 10.0), Some(height as f32 - 40.0));
-        self.body
-            .set_text(&text, &Attrs::new().family(Family::Monospace), Shaping::Advanced, None);
+        let body_attrs = Attrs::new().family(Family::Monospace);
+        if is_python {
+            let spans = self.python_highlighter.highlight(&text);
+            self.body.set_rich_text(rich_spans(&text, &spans, &body_attrs), &body_attrs, Shaping::Advanced, None);
+        } else {
+            self.body.set_text(&text, &body_attrs, Shaping::Advanced, None);
+        }
+        // set_text/set_rich_text always reset the buffer's internal scroll
+        // to line 0 (see the `top_line` field doc comment) — reapply ours
+        // every time, after that, before shaping.
+        self.body.set_scroll(Scroll::new(self.top_line, 0.0, 0.0));
         self.body.shape_until_scroll(font_system, false);
 
         self.status.set_size(Some(width as f32), Some(24.0));

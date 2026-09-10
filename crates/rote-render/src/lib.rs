@@ -12,4 +12,7 @@ pub use renderer::{RectDraw, Renderer, TextDraw};
 pub use glyphon::{
     Attrs, Buffer as TextBuffer, Color, Cursor as LayoutCursor, Family, FontSystem, Metrics, Shaping, Weight, Wrap,
 };
+// Not part of glyphon's own re-export list, but glyphon re-exports the
+// whole `cosmic_text` crate under that name, so this path still resolves.
+pub use glyphon::cosmic_text::Scroll;
 pub use wgpu::Color as ClearColor;

@@ -3,8 +3,9 @@
 A text editor written in Rust, with an embedded Python plugin API and a
 GPU-rendered, minimal UI. This repo is an early scaffold: the architecture
 is in place and it runs — a real editing core, real font rendering, real
-LSP transport, real embedded Python — but most editor *behavior* (modal
-editing, syntax highlighting, panes, a command palette) is still to build.
+LSP transport, real embedded Python, real (Python-only, so far)
+tree-sitter syntax highlighting — but most editor *behavior* (modal
+editing, panes, a command palette) is still to build.
 
 ## Why this stack
 
@@ -14,6 +15,7 @@ editing, syntax highlighting, panes, a command palette) is still to build.
 | Editing core | [`ropey`](https://github.com/cessen/ropey) | O(log n) edits on large files; no rendering or UI knowledge, so it stays testable headlessly. |
 | Plugins | Embedded Python via [`pyo3`](https://pyo3.rs) (`auto-initialize`) | Plugins get `import rote` and call straight into the running editor, in-process — no RPC, no serialization overhead, same shape as Neovim's built-in Lua API but for Python. |
 | LSP | Hand-rolled JSON-RPC client over stdio + [`lsp-types`](https://github.com/gluon-lang/lsp-types) | Language servers are just subprocesses (`rust-analyzer`, `pyright`, `clangd`, ...) — the same model LazyVim/mason use. No language intelligence is reimplemented here. |
+| Syntax highlighting | [`tree-sitter`](https://tree-sitter.github.io/tree-sitter/) + per-language grammar crates (`tree-sitter-python`) | Statically linked, not downloaded — a grammar and its `highlights.scm` query ship inside its own crate, so there's no runtime fetch of a native parser or dynamically loaded code, unlike the "download a grammar on first use" model some editors use. |
 
 Trade-off worth knowing: building the UI on raw `wgpu` means every widget
 (gutter, status line, panes, command palette) gets built by hand rather than
@@ -31,6 +33,8 @@ rote/
 │   │                    currently a placeholder; the MVP status line lives directly in rote-app.
 │   ├── rote-lsp      — LSP client: spawns servers, speaks Content-Length-framed JSON-RPC.
 │   ├── rote-pyapi    — embedded CPython + the `rote` module plugins import.
+│   ├── rote-syntax   — tree-sitter parsing + highlight-query → color-span mapping.
+│   │                    Python only today; no rendering or theme knowledge of its own.
 │   └── rote-app      — the `rote` binary: winit event loop, wires everything together.
 └── plugins/          — example plugins, also picked up from `./plugins` when run via `cargo run`.
 ```
@@ -53,6 +57,9 @@ Requires:
     the dev libs are included); MSVC toolchain (`rustup target add
     x86_64-pc-windows-msvc` if cross-compiling from Linux, or just build
     natively on Windows).
+- A C compiler (`cc`/`clang` on Linux/macOS, MSVC on Windows — the same one
+  the MSVC toolchain above already gets you) for `tree-sitter-python`,
+  which compiles a small amount of generated C as part of its build.
 
 ```sh
 cargo run -p rote-app            # scratch buffer
@@ -72,6 +79,10 @@ in CI on a Windows runner) is the path of least resistance for now.
   `Ctrl+Left`/`Ctrl+Right` jump by word, `Home`/`End` jump to line
   start/end, `Ctrl+Home`/`Ctrl+End` jump to the start/end of the buffer.
 - Click to place the cursor, drag to select. `Ctrl+A` selects all.
+- The view scrolls vertically to keep the cursor on screen, moving only
+  when the cursor is about to leave the visible rows — there's no mouse
+  wheel or `PageUp`/`PageDown` yet, so the cursor is the only thing that
+  moves it.
 - `Ctrl+S` — save (only if the buffer was opened from a file).
 - `Ctrl+Shift+H` — bound entirely from Python by `plugins/hello.py` via
   `rote.bind_key`, demonstrating the plugin round-trip end to end.
@@ -96,7 +107,7 @@ rote.backspace()                  # delete one char before the cursor
 rote.save()                       # write the active buffer to its path
 rote.open(path)                   # load a file into a new buffer, making it active
 rote.register_command(name, fn)   # bind a Python callable to a name
-rote.register_gutter(fn)          # fn(line, wrapped, current) -> str, called per body line
+rote.register_gutter(fn)          # fn(line, wrapped, current_line) -> str, called per visible line
 rote.bind_key(chord, fn)          # e.g. "ctrl+shift+p" — run fn() when that chord is pressed
 rote.open_picker(items, on_select)  # show an in-editor overlay list; on_select(item) on Enter
 ```
@@ -109,12 +120,17 @@ down with it.
 
 `register_gutter` draws a column to the left of the body text — line
 numbers, diagnostics/git signs, breakpoints, whatever a plugin wants to show
-per line. Rote calls `fn` once per logical line on every relayout (not once
-per frame), passing the 1-based line number, whether the row is a soft-wrap
-continuation (always `False` today — the body text doesn't wrap yet, see
-Roadmap), and whether it's the buffer's current line; it returns the string
+per line. Rote calls `fn` once per *visible* line on every relayout (not
+once per frame — and not once per line in the whole buffer either, just the
+ones currently on screen), passing the 1-based line number, whether the row
+is a soft-wrap continuation (always `False` today — the body text doesn't
+wrap yet, see Roadmap), and the buffer's current cursor line (also
+1-based, and the same value on every call in that batch — compare it
+against `line`, or subtract, for relative numbering). It returns the string
 to render for that row. The gutter column is only reserved (and drawn) once
-a plugin has actually registered one — see `plugins/line_numbers.py`.
+a plugin has actually registered one — see `plugins/line_numbers.py`, which
+also shows a plugin holding its own toggle state: `Ctrl+Shift+L` flips it
+between absolute and relative numbering (Vim's `relativenumber`).
 
 `bind_key` takes a chord like `"ctrl+shift+p"` or `"F2"` (modifier order and
 case don't matter — it's normalized before matching) and a zero-arg
@@ -144,14 +160,26 @@ editing core does — see `PluginHost::install_module` in
 ## Roadmap
 
 Roughly in the order that unblocks the most, inspired by what makes LazyVim
-pleasant day to day:
+pleasant day to day. **Suggested next step: #3, `rote-lsp` wired into
+`rote-app`** — it's the first unchecked item, the client already exists
+and just needs calling, and it unlocks the highest-value payoff (real
+diagnostics/completion/hover) for the effort. #4's bullets are also each
+independently small and pick-uppable if a narrower task is wanted instead
+(e.g. just soft-wrap, or just moving the status line into `rote-ui`).
 
 1. ~~**Cursor motion & selection**~~ — done: arrow keys, mouse clicks/drag,
    word/line motions, a rendered caret and selection highlight (a small
    custom `wgpu` quad pipeline in `rote-render`, since glyphon only
-   rasterizes glyphs).
-2. **Syntax highlighting** — `tree-sitter`, feeding per-span `Attrs` (color,
-   weight) into the same `glyphon::Buffer` already used for rendering.
+   rasterizes glyphs), and vertical scroll-to-cursor (`WindowState::top_line`
+   in `rote-app`, reapplied every relayout since `cosmic_text::Buffer::set_text`
+   resets its own scroll each call). Horizontal scroll is still missing —
+   see the soft-wrap note under `rote-ui` below, which is entangled with it.
+2. ~~**Syntax highlighting**~~ — done for Python (`rote-syntax`): tree-sitter
+   parses on every relayout (whole-file re-parse, not incremental — fine at
+   scaffold sizes), a highlight query maps nodes to a small set of
+   categories, `rote-app` colors them via `TextBuffer::set_rich_text`. Next
+   language is a `cargo add tree-sitter-<language>` plus a few lines in
+   `rote-syntax`, not new infrastructure.
 3. **`rote-lsp` wired into `rote-app`** — the client exists but nothing
    calls it yet: diagnostics as underlines, completion popup, hover, go to
    definition.

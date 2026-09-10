@@ -1,0 +1,10 @@
+[package]
+name = "rote-syntax"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+tracing = { workspace = true }
+tree-sitter = "0.27.0"
+tree-sitter-python = "0.25.0"
