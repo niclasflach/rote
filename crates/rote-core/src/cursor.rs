@@ -5,11 +5,16 @@
 pub struct Cursor {
     pub head: usize,
     pub anchor: Option<usize>,
+    /// Column (in chars) that vertical motion (Up/Down) tries to return to
+    /// as it crosses lines of varying length. Set by vertical motions,
+    /// cleared by any horizontal one — otherwise arrowing down through a
+    /// short line and back up would forget where you started.
+    pub sticky_col: Option<usize>,
 }
 
 impl Cursor {
     pub fn at(pos: usize) -> Self {
-        Self { head: pos, anchor: None }
+        Self { head: pos, anchor: None, sticky_col: None }
     }
 
     pub fn has_selection(&self) -> bool {

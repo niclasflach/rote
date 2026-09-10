@@ -5,9 +5,11 @@
 
 mod renderer;
 
-pub use renderer::{Renderer, TextDraw};
+pub use renderer::{RectDraw, Renderer, TextDraw};
 
 // Re-exported so callers only need to depend on `rote-render`, not reach
 // into `glyphon`/`cosmic-text` directly for basic text layout types.
-pub use glyphon::{Attrs, Buffer as TextBuffer, Color, Family, FontSystem, Metrics, Shaping, Weight};
+pub use glyphon::{
+    Attrs, Buffer as TextBuffer, Color, Cursor as LayoutCursor, Family, FontSystem, Metrics, Shaping, Weight, Wrap,
+};
 pub use wgpu::Color as ClearColor;

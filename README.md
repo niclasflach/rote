@@ -66,14 +66,24 @@ in CI on a Windows runner) is the path of least resistance for now.
 
 ## Current MVP controls
 
-- Type to insert, Backspace to delete, Enter for newline.
+- Type to insert, Backspace/Delete to remove a char (or the selection, if
+  any), Enter for newline.
+- Arrow keys move the cursor; hold `Shift` to extend a selection.
+  `Ctrl+Left`/`Ctrl+Right` jump by word, `Home`/`End` jump to line
+  start/end, `Ctrl+Home`/`Ctrl+End` jump to the start/end of the buffer.
+- Click to place the cursor, drag to select. `Ctrl+A` selects all.
 - `Ctrl+S` — save (only if the buffer was opened from a file).
-- `Ctrl+Shift+H` — run the `hello` command registered by `plugins/hello.py`,
-  demonstrating the plugin round-trip end to end.
-- `Esc` — quit.
+- `Ctrl+Shift+H` — bound entirely from Python by `plugins/hello.py` via
+  `rote.bind_key`, demonstrating the plugin round-trip end to end.
+- `Ctrl+P` — `plugins/file_picker.py`'s file-open overlay: type to filter,
+  `Up`/`Down` to move, `Enter` to open the selected file, `Esc` to cancel.
+- `Esc` — quit (or close a picker overlay, if one is open).
 
-There's no cursor movement (arrow keys, clicking) or selection yet — see
-Roadmap.
+The body text doesn't soft-wrap: long lines run off the right edge instead
+of wrapping, and there's no horizontal scroll yet either. This is
+deliberate for now, not just unfinished — a gutter plugin's rows need to
+line up 1:1 with the body's, and wrapping breaks that without a
+wrapped-row-aware gutter API to go with it (see Roadmap).
 
 ## Plugin API (current surface)
 
@@ -84,7 +94,11 @@ rote.text()                       # -> str, the active buffer's full text
 rote.insert(text)                 # insert at the cursor, cursor advances past it
 rote.backspace()                  # delete one char before the cursor
 rote.save()                       # write the active buffer to its path
+rote.open(path)                   # load a file into a new buffer, making it active
 rote.register_command(name, fn)   # bind a Python callable to a name
+rote.register_gutter(fn)          # fn(line, wrapped, current) -> str, called per body line
+rote.bind_key(chord, fn)          # e.g. "ctrl+shift+p" — run fn() when that chord is pressed
+rote.open_picker(items, on_select)  # show an in-editor overlay list; on_select(item) on Enter
 ```
 
 Drop a `.py` file in `~/.config/rote/plugins` (`%APPDATA%\rote\plugins` on
@@ -93,8 +107,38 @@ at startup with `import rote` already available — see `plugins/hello.py`.
 A plugin that raises on load is logged and skipped; it won't take the editor
 down with it.
 
-This surface will grow (cursor motion, selections, buffer events, keymap
-registration) as the editing core does — see `PluginHost::install_module` in
+`register_gutter` draws a column to the left of the body text — line
+numbers, diagnostics/git signs, breakpoints, whatever a plugin wants to show
+per line. Rote calls `fn` once per logical line on every relayout (not once
+per frame), passing the 1-based line number, whether the row is a soft-wrap
+continuation (always `False` today — the body text doesn't wrap yet, see
+Roadmap), and whether it's the buffer's current line; it returns the string
+to render for that row. The gutter column is only reserved (and drawn) once
+a plugin has actually registered one — see `plugins/line_numbers.py`.
+
+`bind_key` takes a chord like `"ctrl+shift+p"` or `"F2"` (modifier order and
+case don't matter — it's normalized before matching) and a zero-arg
+callable to run when that chord is pressed; `Ctrl+Shift+H` in
+`plugins/hello.py` is bound this way. A handful of chords are still
+hardcoded ahead of plugin keymaps and can't be overridden — arrow keys,
+Home/End, `Ctrl+S`, `Ctrl+A`, and `Esc` (which quits, or closes a picker,
+before a key event even reaches plugin dispatch) — everything else falls
+through to whatever a plugin bound.
+
+`open_picker(items, on_select)` shows a filterable, keyboard-navigable list
+over the body area — typing filters it (plain substring match), `Up`/`Down`
+moves the selection, `Enter` calls `on_select(chosen_item)` and closes it,
+`Esc` closes it without calling anything. `rote-pyapi` only stores the item
+list and callback; `rote-app` owns the actual overlay (query text, the
+selected row, rendering), so opening one doesn't need any more plumbing
+than that single call — see `plugins/file_picker.py`, which lists the
+working directory with `os.walk` (no Rote API needed for that part — a
+plugin is a full CPython) and passes `rote.open` itself as `on_select`.
+While a picker is open it captures all keyboard input; nothing reaches the
+buffer underneath until it closes.
+
+This surface will grow (cursor motion, selections, buffer events) as the
+editing core does — see `PluginHost::install_module` in
 `crates/rote-pyapi/src/lib.rs`.
 
 ## Roadmap
@@ -102,15 +146,23 @@ registration) as the editing core does — see `PluginHost::install_module` in
 Roughly in the order that unblocks the most, inspired by what makes LazyVim
 pleasant day to day:
 
-1. **Cursor motion & selection** — arrow keys, mouse clicks/drag, word/line
-   motions. `rote-core::Cursor` already models a head + optional anchor.
+1. ~~**Cursor motion & selection**~~ — done: arrow keys, mouse clicks/drag,
+   word/line motions, a rendered caret and selection highlight (a small
+   custom `wgpu` quad pipeline in `rote-render`, since glyphon only
+   rasterizes glyphs).
 2. **Syntax highlighting** — `tree-sitter`, feeding per-span `Attrs` (color,
    weight) into the same `glyphon::Buffer` already used for rendering.
 3. **`rote-lsp` wired into `rote-app`** — the client exists but nothing
    calls it yet: diagnostics as underlines, completion popup, hover, go to
    definition.
-4. **`rote-ui`** — gutter (line numbers, diagnostics/git signs), status
-   line (move it out of `rote-app`), a fuzzy-find command palette, splits.
+4. **`rote-ui`** — a *built-in* gutter (today's line numbers only exist via
+   `plugins/line_numbers.py` and `rote.register_gutter`), status line (move
+   it out of `rote-app`), splits. Soft-wrap plus a wrap-aware
+   `register_gutter` (so continuation rows are distinguishable and a
+   gutter can span them) belongs here too. A fuzzy-find command palette
+   mostly already exists as `rote.open_picker` (see Plugin API) — what's
+   missing is fuzzy (vs. substring) matching and floating the overlay on
+   top of the body instead of replacing it.
 5. **Modal editing / keymap system** — a LazyVim-style layered keymap
    (default → language → user overrides), not hardcoded `match` arms in
    `main.rs` like today.
